@@ -13,6 +13,7 @@ import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.UUID;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.containing;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.exactly;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
@@ -85,7 +86,7 @@ public class PrometheusWiremockService extends BaseService<DatabaseService> {
                         .willReturn(okJson(toJson(expectedResult))));
     }
 
-    public void stubQueryRange(QueryResult... expectedResults) {
+    public void stubQueryRange(String containsInQuery, QueryResult... expectedResults) {
         String scenarioId = UUID.randomUUID().toString();
         int stepId = 0;
         String currentState = STARTED;
@@ -94,6 +95,7 @@ public class PrometheusWiremockService extends BaseService<DatabaseService> {
             stepId++;
             server().stubFor(
                     get(urlPathMatching(QUERY_RANGE_PATH))
+                            .withQueryParam("query", containing(containsInQuery))
                             .inScenario(scenarioId)
                             .whenScenarioStateIs(currentState)
                             .willReturn(okJson(toJson(result)))

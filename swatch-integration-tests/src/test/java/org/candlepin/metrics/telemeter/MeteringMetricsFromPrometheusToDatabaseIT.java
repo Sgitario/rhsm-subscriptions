@@ -20,6 +20,9 @@
  */
 package org.candlepin.metrics.telemeter;
 
+import com.redhat.swatch.configuration.registry.Metric;
+import com.redhat.swatch.configuration.registry.MetricId;
+import com.redhat.swatch.configuration.registry.SubscriptionDefinition;
 import io.jeasyarch.api.DatabaseService;
 import io.jeasyarch.api.DefaultService;
 import io.jeasyarch.api.JEasyArch;
@@ -31,13 +34,13 @@ import org.candlepin.integration.tests.api.Kafka;
 import org.candlepin.integration.tests.api.Prometheus;
 import org.candlepin.integration.tests.api.PrometheusWiremockService;
 import org.candlepin.integration.tests.api.RhsmSubscriptionsDatabase;
+import org.candlepin.integration.tests.api.RhsmSubscriptionsDatabaseService;
 import org.candlepin.subscriptions.json.Event;
 import org.candlepin.subscriptions.prometheus.model.QueryResult;
 import org.candlepin.subscriptions.prometheus.model.QueryResultData;
 import org.candlepin.subscriptions.prometheus.model.QueryResultDataResultInner;
 import org.candlepin.subscriptions.prometheus.model.ResultType;
 import org.candlepin.subscriptions.prometheus.model.StatusType;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -52,13 +55,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 @JEasyArch
@@ -68,10 +68,11 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
   private static final int NUM_METRICS_TO_SEND = 5;
   private static final Duration TIMEOUT_TO_WAIT_FOR_METRICS = Duration.ofSeconds(5);
   private static final String PRODUCT_TAG = "rosa";
+  private static final MetricId CORES = MetricId.fromString("Cores");
   private static final String ORG_ID = "1111";
 
   @RhsmSubscriptionsDatabase
-  static final DatabaseService rhsmDatabase = new DatabaseService();
+  static final RhsmSubscriptionsDatabaseService rhsmDatabase = new RhsmSubscriptionsDatabaseService();
 
   @InsightsDatabase
   static final DatabaseService insightsDatabase = new DatabaseService();
@@ -98,6 +99,7 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
           .withProperty("rhsm-subscriptions.enable-synchronous-operations", "true")
           .withProperty("rhsm-subscriptions.metering.prometheus.client.url", prometheus::getClientUrl)
           .withProperty("rhsm-subscriptions.metering.prometheus.metric.max-attempts", "1")
+          .withProperty("rhsm-subscriptions.metering.prometheus.metric.event-source", PROMETHEUS)
           .withProperty("spring.kafka.bootstrap-servers", () -> kafka.getHost() + ":" + kafka.getFirstMappedPort())
           .withProperty("rhsm-subscriptions.datasource.url", rhsmDatabase::getJdbcUrl);
 
@@ -111,7 +113,7 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
     whenCollectMetrics();
     verifyAllEventsAreStoredInDatabaseWithUsage(Event.Usage.DEVELOPMENT_TEST);
     // store existing events to assert that event ID didn't change.
-    List<UUID> snapshotOfExistingEvents = getEventIDsFromRepository();
+    List<UUID> snapshotOfExistingEvents = rhsmDatabase.getEventIdFromEvents();
 
     // all update
     givenMetricsInPrometheusWithUsage(timestampForEvents, Event.Usage.PRODUCTION);
@@ -119,13 +121,20 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
     verifyAllEventsAreStoredInDatabaseWithUsage(Event.Usage.PRODUCTION);
     verifyAllEventsUseEventSourcePrometheus();
     assertThat(snapshotOfExistingEvents)
-            .containsExactlyInAnyOrderElementsOf(getEventIDsFromRepository());
+            .containsExactlyInAnyOrderElementsOf(rhsmDatabase.getEventIdFromEvents());
   }
 
   private void givenMetricsInPrometheusWithUsage(
           OffsetDateTime timestamp,
           Event.Usage usage) {
     prometheus.resetScenario();
+
+    SubscriptionDefinition product = SubscriptionDefinition.lookupSubscriptionByTag(PRODUCT_TAG)
+            .orElseThrow(() -> new RuntimeException("Product '" + PRODUCT_TAG + "' not found!"));
+
+    Metric metric = product.getMetric(CORES.getValue())
+            .orElseThrow(() -> new RuntimeException("Metric '" + CORES.getValue() + "' not found in product!"));;
+
     QueryResult expectedResult = new QueryResult();
     expectedResult.status(StatusType.SUCCESS);
     QueryResultData expectedData = new QueryResultData();
@@ -138,7 +147,7 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
                       List.of(
                               new BigDecimal(timestamp.plusSeconds(100).toEpochSecond()), new BigDecimal(1))));
       Map<String, String> labels = new HashMap<>();
-      labels.put("_id", "id" + i);
+      labels.put(metric.getPrometheus().getQueryParams().get("instanceKey"), "id" + i);
       labels.put("product", "ocp");
       labels.put("support", "Premium");
       labels.put("usage", usage.value());
@@ -148,7 +157,7 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
     expectedData.result(metricsList);
     expectedResult.data(expectedData);
 
-    prometheus.stubQueryRange(expectedResult);
+    prometheus.stubQueryRange(metric.getPrometheus().getQueryParams().get("metric"), expectedResult);
   }
 
   private void whenCollectMetrics() {
@@ -167,7 +176,7 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
             .atMost(TIMEOUT_TO_WAIT_FOR_METRICS)
             .untilAsserted(
                     () -> {
-                      assertEquals(NUM_METRICS_TO_SEND, getNumOfEventsInDatabase());
+                      assertEquals(NUM_METRICS_TO_SEND, rhsmDatabase.countEvents());
                     });
   }
 
@@ -182,58 +191,6 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
         fail("Error running the query. Cause: " + e.getMessage());
       }
     });
-  }
-
-  private int getNumOfEventsInDatabase() {
-    AtomicInteger count = new AtomicInteger();
-    rhsmDatabase.openStatement(statement -> {
-      try {
-        ResultSet rs = statement.executeQuery("select count(*) from events");
-        while (rs.next()) {
-          count.set(rs.getInt(1));
-        }
-      } catch (SQLException e) {
-        fail("Error running the query. Cause: " + e.getMessage());
-      }
-    });
-    return count.get();
-  }
-
-  private List<UUID> getEventIDsFromRepository() {
-    List<UUID> eventIds = new ArrayList<>();
-    rhsmDatabase.openStatement(statement -> {
-      try {
-        ResultSet rs = statement.executeQuery("select event_id from events");
-        while (rs.next()) {
-          eventIds.add(UUID.fromString(rs.getString(1)));
-        }
-      } catch (SQLException e) {
-        fail("Error running the query. Cause: " + e.getMessage());
-      }
-    });
-    return eventIds;
-  }
-
-  private boolean eventExists(String orgId, String eventSource, String eventType, String instanceId, OffsetDateTime timestamp) {
-    AtomicBoolean result = new AtomicBoolean();
-    rhsmDatabase.openStatement(statement -> {
-      try {
-        ResultSet rs = statement.executeQuery(
-                String.format("select org_id " +
-                                "from events " +
-                                "where org_id='%s' " +
-                                "and event_source='%s' " +
-                                "and event_type='%s' " +
-                                "and instance_id='%s' " +
-                                "and timestamp='%s'",
-                        orgId, eventSource, eventType, instanceId, timestamp));
-        result.set(rs.next());
-      } catch (SQLException e) {
-        fail("Error running the query. Cause: " + e.getMessage());
-      }
-    });
-
-    return result.get();
   }
 
   private String identity() {

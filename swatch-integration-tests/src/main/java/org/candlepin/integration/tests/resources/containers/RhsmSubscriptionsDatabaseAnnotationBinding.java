@@ -7,6 +7,7 @@ import io.jeasyarch.core.JEasyArchContext;
 import io.jeasyarch.core.ManagedResource;
 import io.jeasyarch.resources.containers.ContainerAnnotationBinding;
 import org.candlepin.integration.tests.api.RhsmSubscriptionsDatabase;
+import org.candlepin.integration.tests.api.RhsmSubscriptionsDatabaseService;
 
 import java.lang.annotation.Annotation;
 
@@ -15,6 +16,11 @@ public class RhsmSubscriptionsDatabaseAnnotationBinding extends ContainerAnnotat
     @Override
     public boolean isFor(Annotation... annotations) {
         return findAnnotation(annotations, RhsmSubscriptionsDatabase.class).isPresent();
+    }
+
+    @Override
+    public Service getDefaultServiceImplementation() {
+        return new RhsmSubscriptionsDatabaseService();
     }
 
     @Override
