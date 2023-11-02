@@ -1,0 +1,16 @@
+plugins {
+    id 'swatch.java-conventions'
+}
+
+dependencies {
+    implementation project(":clients:prometheus-client")
+    implementation "org.springframework:spring-context:6.0.13"
+    implementation "io.jeasyarch:service-database:0.0.1-SNAPSHOT"
+    implementation libraries["wiremock"]
+    implementation 'org.testcontainers:kafka:1.19.1'
+
+    testImplementation "io.jeasyarch:spring:0.0.1-SNAPSHOT"
+    testImplementation "org.postgresql:postgresql:42.6.0"
+    testImplementation project(path: ':swatch-model-events')
+    testImplementation 'org.assertj:assertj-core:3.24.2'
+}

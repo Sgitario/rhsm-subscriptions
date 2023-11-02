@@ -1,0 +1,4 @@
+org.candlepin.integration.tests.resources.containers.RhsmSubscriptionsDatabaseAnnotationBinding
+org.candlepin.integration.tests.resources.containers.InsightsDatabaseAnnotationBinding
+org.candlepin.integration.tests.resources.containers.KafkaAnnotationBinding
+org.candlepin.integration.tests.resources.PrometheusAnnotationBinding
