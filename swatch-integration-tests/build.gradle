@@ -13,6 +13,7 @@ dependencies {
     implementation 'org.testcontainers:kafka:1.19.1'
 
     testImplementation "io.jeasyarch:spring:0.0.1-SNAPSHOT"
+    testImplementation "io.jeasyarch:quarkus:0.0.1-SNAPSHOT"
     testImplementation "org.postgresql:postgresql:42.6.0"
     testImplementation project(':swatch-model-events')
     testImplementation 'org.assertj:assertj-core:3.24.2'

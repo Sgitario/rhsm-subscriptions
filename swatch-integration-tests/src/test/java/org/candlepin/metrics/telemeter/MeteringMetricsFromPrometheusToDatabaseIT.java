@@ -20,6 +20,12 @@
  */
 package org.candlepin.metrics.telemeter;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.candlepin.integration.tests.utils.Constants.PROMETHEUS;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+
 import com.redhat.swatch.configuration.registry.Metric;
 import com.redhat.swatch.configuration.registry.MetricId;
 import com.redhat.swatch.configuration.registry.SubscriptionDefinition;
@@ -28,21 +34,6 @@ import io.jeasyarch.api.DefaultService;
 import io.jeasyarch.api.JEasyArch;
 import io.jeasyarch.api.RestService;
 import io.jeasyarch.api.Spring;
-import org.apache.http.HttpStatus;
-import org.candlepin.integration.tests.api.InsightsDatabase;
-import org.candlepin.integration.tests.api.Kafka;
-import org.candlepin.integration.tests.api.Prometheus;
-import org.candlepin.integration.tests.api.PrometheusWiremockService;
-import org.candlepin.integration.tests.api.RhsmSubscriptionsDatabase;
-import org.candlepin.integration.tests.api.RhsmSubscriptionsDatabaseService;
-import org.candlepin.subscriptions.json.Event;
-import org.candlepin.subscriptions.prometheus.model.QueryResult;
-import org.candlepin.subscriptions.prometheus.model.QueryResultData;
-import org.candlepin.subscriptions.prometheus.model.QueryResultDataResultInner;
-import org.candlepin.subscriptions.prometheus.model.ResultType;
-import org.candlepin.subscriptions.prometheus.model.StatusType;
-import org.junit.jupiter.api.Test;
-
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
@@ -55,15 +46,24 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.apache.http.HttpStatus;
+import org.candlepin.integration.tests.api.InsightsDatabase;
+import org.candlepin.integration.tests.api.Kafka;
+import org.candlepin.integration.tests.api.Prometheus;
+import org.candlepin.integration.tests.api.PrometheusWiremockService;
+import org.candlepin.integration.tests.api.RhsmSubscriptionsDatabase;
+import org.candlepin.integration.tests.api.RhsmSubscriptionsDatabaseService;
+import org.candlepin.integration.tests.api.TallyService;
+import org.candlepin.subscriptions.json.Event;
+import org.candlepin.subscriptions.prometheus.model.QueryResult;
+import org.candlepin.subscriptions.prometheus.model.QueryResultData;
+import org.candlepin.subscriptions.prometheus.model.QueryResultDataResultInner;
+import org.candlepin.subscriptions.prometheus.model.ResultType;
+import org.candlepin.subscriptions.prometheus.model.StatusType;
+import org.junit.jupiter.api.Test;
 
 @JEasyArch
 class MeteringMetricsFromPrometheusToDatabaseIT {
-  private static final String PROMETHEUS = "prometheus";
 
   private static final int NUM_METRICS_TO_SEND = 5;
   private static final Duration TIMEOUT_TO_WAIT_FOR_METRICS = Duration.ofSeconds(5);
@@ -72,36 +72,28 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
   private static final String ORG_ID = "1111";
 
   @RhsmSubscriptionsDatabase
-  static final RhsmSubscriptionsDatabaseService rhsmDatabase = new RhsmSubscriptionsDatabaseService();
+  static final RhsmSubscriptionsDatabaseService rhsmDatabase =
+      new RhsmSubscriptionsDatabaseService();
 
-  @InsightsDatabase
-  static final DatabaseService insightsDatabase = new DatabaseService();
+  @InsightsDatabase static final DatabaseService insightsDatabase = new DatabaseService();
 
-  @Kafka
-  static final DefaultService kafka = new DefaultService();
+  @Kafka static final DefaultService kafka = new DefaultService();
 
-  @Prometheus
-  static final PrometheusWiremockService prometheus = new PrometheusWiremockService();
+  @Prometheus static final PrometheusWiremockService prometheus = new PrometheusWiremockService();
 
   @Spring(location = "../")
-  static final RestService tally = new RestService()
-          .withProperty("spring.profiles.active", "worker")
-          .withProperty("spring.kafka.bootstrap-servers", () -> kafka.getHost() + ":" + kafka.getFirstMappedPort())
-          .withProperty("rhsm-subscriptions.datasource.url", rhsmDatabase::getJdbcUrl)
-          .withProperty("rhsm-subscriptions.inventory-service.datasource.url", insightsDatabase::getJdbcUrl);
+  static final TallyService tally =
+      TallyService.ofWorkerProfile()
+          .withKafka(kafka)
+          .withDataSource(rhsmDatabase)
+          .withInventoryDatasource(insightsDatabase);
 
   @Spring(location = "../")
-  static final RestService metrics = new RestService()
-          .withProperty("spring.profiles.active", "openshift-metering-worker,kafka-queue")
-          .withProperty("rhsm-subscriptions.subscription.use-stub", "true")
-          .withProperty("rhsm-subscriptions.user-service.use-stub", "true")
-          .withProperty("rhsm-subscriptions.rbac-service.use-stub", "true")
-          .withProperty("rhsm-subscriptions.enable-synchronous-operations", "true")
-          .withProperty("rhsm-subscriptions.metering.prometheus.client.url", prometheus::getClientUrl)
-          .withProperty("rhsm-subscriptions.metering.prometheus.metric.max-attempts", "1")
-          .withProperty("rhsm-subscriptions.metering.prometheus.metric.event-source", PROMETHEUS)
-          .withProperty("spring.kafka.bootstrap-servers", () -> kafka.getHost() + ":" + kafka.getFirstMappedPort())
-          .withProperty("rhsm-subscriptions.datasource.url", rhsmDatabase::getJdbcUrl);
+  static final RestService metrics =
+      TallyService.ofTelemeterMetricsProfile(prometheus)
+          .enableSyncOperations()
+          .withKafka(kafka)
+          .withDataSource(rhsmDatabase);
 
   @Test
   void testCreateNewMetricsAndUpdateExistingEvents() {
@@ -121,19 +113,24 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
     verifyAllEventsAreStoredInDatabaseWithUsage(Event.Usage.PRODUCTION);
     verifyAllEventsUseEventSourcePrometheus();
     assertThat(snapshotOfExistingEvents)
-            .containsExactlyInAnyOrderElementsOf(rhsmDatabase.getEventIdFromEvents());
+        .containsExactlyInAnyOrderElementsOf(rhsmDatabase.getEventIdFromEvents());
   }
 
-  private void givenMetricsInPrometheusWithUsage(
-          OffsetDateTime timestamp,
-          Event.Usage usage) {
+  private void givenMetricsInPrometheusWithUsage(OffsetDateTime timestamp, Event.Usage usage) {
     prometheus.resetScenario();
 
-    SubscriptionDefinition product = SubscriptionDefinition.lookupSubscriptionByTag(PRODUCT_TAG)
+    SubscriptionDefinition product =
+        SubscriptionDefinition.lookupSubscriptionByTag(PRODUCT_TAG)
             .orElseThrow(() -> new RuntimeException("Product '" + PRODUCT_TAG + "' not found!"));
 
-    Metric metric = product.getMetric(CORES.getValue())
-            .orElseThrow(() -> new RuntimeException("Metric '" + CORES.getValue() + "' not found in product!"));;
+    Metric metric =
+        product
+            .getMetric(CORES.getValue())
+            .orElseThrow(
+                () ->
+                    new RuntimeException(
+                        "Metric '" + CORES.getValue() + "' not found in product!"));
+    ;
 
     QueryResult expectedResult = new QueryResult();
     expectedResult.status(StatusType.SUCCESS);
@@ -143,9 +140,9 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
     for (int i = 0; i < NUM_METRICS_TO_SEND; i++) {
       QueryResultDataResultInner data = new QueryResultDataResultInner();
       data.values(
+          List.of(
               List.of(
-                      List.of(
-                              new BigDecimal(timestamp.plusSeconds(100).toEpochSecond()), new BigDecimal(1))));
+                  new BigDecimal(timestamp.plusSeconds(100).toEpochSecond()), new BigDecimal(1))));
       Map<String, String> labels = new HashMap<>();
       labels.put(metric.getPrometheus().getQueryParams().get("instanceKey"), "id" + i);
       labels.put("product", "ocp");
@@ -157,47 +154,54 @@ class MeteringMetricsFromPrometheusToDatabaseIT {
     expectedData.result(metricsList);
     expectedResult.data(expectedData);
 
-    prometheus.stubQueryRange(metric.getPrometheus().getQueryParams().get("metric"), expectedResult);
+    prometheus.stubQueryRange(
+        metric.getPrometheus().getQueryParams().get("metric"), expectedResult);
   }
 
   private void whenCollectMetrics() {
-    metrics.given()
-            .queryParam("orgId", ORG_ID)
-            .header("Origin", "console.redhat.com")
-            .header("x-rh-swatch-synchronous-request", "true")
-            .header("x-rh-swatch-psk", "placeholder")
-            .header("x-rh-identity", identity())
-            .post("/api/rhsm-subscriptions/v1/internal/metering/" + PRODUCT_TAG)
-            .then().statusCode(HttpStatus.SC_NO_CONTENT);
+    metrics
+        .given()
+        .queryParam("orgId", ORG_ID)
+        .header("Origin", "console.redhat.com")
+        .header("x-rh-swatch-synchronous-request", "true")
+        .header("x-rh-swatch-psk", "placeholder")
+        .header("x-rh-identity", identity())
+        .post("/api/rhsm-subscriptions/v1/internal/metering/" + PRODUCT_TAG)
+        .then()
+        .statusCode(HttpStatus.SC_NO_CONTENT);
   }
 
   private void verifyAllEventsAreStoredInDatabaseWithUsage(Event.Usage expectedUsage) {
     await()
-            .atMost(TIMEOUT_TO_WAIT_FOR_METRICS)
-            .untilAsserted(
-                    () -> {
-                      assertEquals(NUM_METRICS_TO_SEND, rhsmDatabase.countEvents());
-                    });
+        .atMost(TIMEOUT_TO_WAIT_FOR_METRICS)
+        .untilAsserted(
+            () -> {
+              assertEquals(NUM_METRICS_TO_SEND, rhsmDatabase.countEvents());
+            });
   }
 
   private void verifyAllEventsUseEventSourcePrometheus() {
-    rhsmDatabase.openStatement(statement -> {
-      try {
-        ResultSet rs = statement.executeQuery("select event_source from events");
-        while (rs.next()) {
-          assertEquals(PROMETHEUS, rs.getString(1));
-        }
-      } catch (SQLException e) {
-        fail("Error running the query. Cause: " + e.getMessage());
-      }
-    });
+    rhsmDatabase.openStatement(
+        statement -> {
+          try {
+            ResultSet rs = statement.executeQuery("select event_source from events");
+            while (rs.next()) {
+              assertEquals(PROMETHEUS, rs.getString(1));
+            }
+          } catch (SQLException e) {
+            fail("Error running the query. Cause: " + e.getMessage());
+          }
+        });
   }
 
   private String identity() {
-    String identity = "{\"identity\":{\"account_number\":\"\"," +
-            "\"type\":\"User\"," +
-            "\"user\":{\"is_org_admin\":true}," +
-            "\"internal\":{\"org_id\":\"" + ORG_ID + "\"}}}";
+    String identity =
+        "{\"identity\":{\"account_number\":\"\","
+            + "\"type\":\"User\","
+            + "\"user\":{\"is_org_admin\":true},"
+            + "\"internal\":{\"org_id\":\""
+            + ORG_ID
+            + "\"}}}";
     return Base64.getEncoder().encodeToString(identity.getBytes(StandardCharsets.UTF_8));
   }
 }

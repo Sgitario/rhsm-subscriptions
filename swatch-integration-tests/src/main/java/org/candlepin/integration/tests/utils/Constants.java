@@ -18,28 +18,11 @@
  * granted to use or replicate Red Hat trademarks that are incorporated
  * in this software or its documentation.
  */
-package org.candlepin.integration.tests.resources;
+package org.candlepin.integration.tests.utils;
 
-import io.jeasyarch.api.Service;
-import io.jeasyarch.api.extensions.AnnotationBinding;
-import io.jeasyarch.core.JEasyArchContext;
-import io.jeasyarch.core.ManagedResource;
-import java.lang.annotation.Annotation;
-import org.candlepin.integration.tests.api.Prometheus;
-import org.candlepin.integration.tests.resources.wiremock.WiremockManagedResource;
+public final class Constants {
 
-public class PrometheusAnnotationBinding implements AnnotationBinding {
+  public static final String PROMETHEUS = "prometheus";
 
-  @Override
-  public boolean isFor(Annotation... annotations) {
-    return findAnnotation(annotations, Prometheus.class).isPresent();
-  }
-
-  @Override
-  public ManagedResource getManagedResource(
-      JEasyArchContext context, Service service, Annotation... annotations) {
-    Prometheus metadata = findAnnotation(annotations, Prometheus.class).get();
-
-    return new WiremockManagedResource();
-  }
+  private Constants() {}
 }
